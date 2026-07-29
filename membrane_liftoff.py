@@ -73,6 +73,20 @@ class CFG:
     }
     LAYER_SEPARATION_Z = 0.15       # gap between adjacent layers
 
+    # ---- Water molecules -----------------------------------------------------
+    WATER_COUNT = 40                # how many water "molecules" to spawn
+    WATER_RADIUS = 2.0 * OCTA_RADIUS  # ~ two octahedra across
+    WATER_UV_SEGMENTS = 16          # sphere resolution (keep modest for speed)
+    WATER_SPAWN_RING_MARGIN = 3.0   # how far out from the stack water starts
+    WATER_SPAWN_Z_SPREAD = 2.0      # vertical spread of the spawn shell
+    COLOR_WATER = (0.20, 0.70, 0.95, 1.0)   # cyan, semi-transparent
+    WATER_ALPHA = 0.45
+    # Water timeline (frames)
+    WATER_FADE_IN_START = 1
+    WATER_FADE_IN_END   = 20
+    WATER_APPROACH_END  = 60        # water has reached the sacrificial layer
+    WATER_DISSIPATE_END = 175       # water fully faded out
+
     # ---- Colors (RGBA) -- vivid, emissive ------------------------------------
     COLOR_SUBSTRATE   = (0.45, 0.05, 0.85, 1.0)   # vivid violet
     COLOR_SACRIFICIAL = (1.00, 0.30, 0.02, 1.0)   # vivid orange-red
@@ -99,7 +113,7 @@ class CFG:
     EEVEE_SAMPLES = 16              # low samples = smooth realtime playback
     FPS = 24
     FRAME_START = 1
-    FRAME_END = 165
+    FRAME_END = 185                 # long enough for the water to fully dissipate
     RESOLUTION_X = 1280
     RESOLUTION_Y = 720
     RESOLUTION_PERCENT = 100
@@ -165,7 +179,7 @@ def make_octahedron_mesh(name, radius):
     return mesh
 
 
-def make_material(name, rgba, emission_strength=0.0):
+def make_material(name, rgba, emission_strength=0.0, alpha=1.0):
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
@@ -173,6 +187,8 @@ def make_material(name, rgba, emission_strength=0.0):
         bsdf.inputs["Base Color"].default_value = rgba
         if "Roughness" in bsdf.inputs:
             bsdf.inputs["Roughness"].default_value = CFG.MATERIAL_ROUGHNESS
+        if "Alpha" in bsdf.inputs:
+            bsdf.inputs["Alpha"].default_value = alpha
         if emission_strength > 0.0:
             for key in ("Emission Color", "Emission"):   # renamed in 4.0
                 if key in bsdf.inputs:
@@ -181,7 +197,29 @@ def make_material(name, rgba, emission_strength=0.0):
             if "Emission Strength" in bsdf.inputs:
                 bsdf.inputs["Emission Strength"].default_value = emission_strength
     mat.diffuse_color = rgba   # viewport display color (Solid shading)
+    if alpha < 1.0:
+        for attr, val in (("blend_method", "BLEND"),
+                          ("show_transparent_back", False)):
+            if hasattr(mat, attr):
+                setattr(mat, attr, val)
     return mat
+
+
+def make_uv_sphere_mesh(name, radius, segments):
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    seg = max(6, segments)
+    rings = max(4, segments // 2)
+    # create_uvsphere uses `radius` on Blender 3.0+; fall back to `diameter`.
+    try:
+        bmesh.ops.create_uvsphere(bm, u_segments=seg, v_segments=rings,
+                                  radius=radius)
+    except TypeError:
+        bmesh.ops.create_uvsphere(bm, u_segments=seg, v_segments=rings,
+                                  diameter=radius * 2.0)
+    bm.to_mesh(mesh)
+    bm.free()
+    return mesh
 
 
 # =============================================================================
@@ -344,6 +382,76 @@ def animate_erosion(sacrificial_objs, rng):
 
 
 # =============================================================================
+# Animation: water molecules
+# =============================================================================
+
+def build_and_animate_water(water_mesh, water_mat, geom, rng):
+    coll = ensure_collection("Water")
+    water_mesh.materials.append(water_mat)
+
+    bounds = geom["bounds"]
+    sac_z_min, sac_z_max = bounds["sacrificial"]
+    sac_center_z = 0.5 * (sac_z_min + sac_z_max)
+    ring_radius = 0.5 * geom["lateral_extent"] + CFG.WATER_SPAWN_RING_MARGIN
+
+    for i in range(CFG.WATER_COUNT):
+        ang = rng.uniform(0, 2 * math.pi)
+        r = ring_radius * rng.uniform(0.9, 1.15)
+        spawn = Vector((r * math.cos(ang), r * math.sin(ang),
+                        sac_center_z + rng.uniform(-CFG.WATER_SPAWN_Z_SPREAD,
+                                                   CFG.WATER_SPAWN_Z_SPREAD)))
+
+        tang = rng.uniform(0, 2 * math.pi)
+        tr = 0.5 * geom["lateral_extent"] * rng.uniform(0.2, 1.0)
+        target = Vector((tr * math.cos(tang), tr * math.sin(tang),
+                         rng.uniform(sac_z_min, sac_z_max)))
+
+        obj = bpy.data.objects.new(f"water_{i}", water_mesh)
+        obj.location = spawn
+        coll.objects.link(obj)
+
+        appear = int(rng.uniform(CFG.WATER_FADE_IN_START, CFG.WATER_FADE_IN_END))
+        arrive = int(rng.uniform(CFG.WATER_APPROACH_END - 12,
+                                 CFG.WATER_APPROACH_END))
+        gone = int(rng.uniform(CFG.EROSION_END, CFG.WATER_DISSIPATE_END))
+
+        full = Vector((1.0, 1.0, 1.0))
+        tiny = Vector((0.001, 0.001, 0.001))
+
+        # Scale: fade in, hold, dissipate
+        obj.scale = tiny
+        obj.keyframe_insert("scale", frame=appear)
+        obj.scale = full
+        obj.keyframe_insert("scale", frame=min(appear + 8, arrive))
+        obj.scale = full
+        obj.keyframe_insert("scale", frame=arrive)
+        obj.scale = tiny
+        obj.keyframe_insert("scale", frame=gone)
+
+        # Location: approach, then wash outward while dissipating
+        obj.location = spawn
+        obj.keyframe_insert("location", frame=appear)
+        obj.location = target
+        obj.keyframe_insert("location", frame=arrive)
+        drift = target + Vector((rng.uniform(-1, 1), rng.uniform(-1, 1),
+                                 0.5)) * 1.5
+        obj.location = drift
+        obj.keyframe_insert("location", frame=gone)
+
+        # Hide after dissipation
+        obj.hide_viewport = False
+        obj.hide_render = False
+        obj.keyframe_insert("hide_viewport", frame=gone - 1)
+        obj.keyframe_insert("hide_render", frame=gone - 1)
+        obj.hide_viewport = True
+        obj.hide_render = True
+        obj.keyframe_insert("hide_viewport", frame=gone)
+        obj.keyframe_insert("hide_render", frame=gone)
+
+        _set_interpolation(obj, "SINE", "EASE_IN_OUT")
+
+
+# =============================================================================
 # Camera, lights, world, render settings
 # =============================================================================
 
@@ -466,9 +574,14 @@ def main():
         "film":        make_material("Film", CFG.COLOR_FILM,
                                      CFG.EMISSION_STRENGTH),
     }
+    water_mat = make_material("Water", CFG.COLOR_WATER,
+                              emission_strength=0.3, alpha=CFG.WATER_ALPHA)
+    water_mesh = make_uv_sphere_mesh("WaterMolecule", CFG.WATER_RADIUS,
+                                     CFG.WATER_UV_SEGMENTS)
 
     geom = build_layers(materials)
     animate_erosion(geom["objects"]["sacrificial"], rng)
+    build_and_animate_water(water_mesh, water_mat, geom, rng)
 
     setup_camera_and_lights(geom)
     setup_render_and_timeline()
@@ -476,10 +589,10 @@ def main():
     bpy.context.scene.frame_set(CFG.FRAME_START)
 
     total = sum(len(v) for v in geom["objects"].values())
-    print("[membrane_liftoff] Built {} octahedra (one object each). "
-          "Frames {}-{} @ {}fps. Transparent BG: {}."
-          .format(total, CFG.FRAME_START, CFG.FRAME_END, CFG.FPS,
-                  CFG.TRANSPARENT_BG))
+    print("[membrane_liftoff] Built {} octahedra (one object each) + {} water "
+          "molecules. Frames {}-{} @ {}fps. Transparent BG: {}."
+          .format(total, CFG.WATER_COUNT, CFG.FRAME_START, CFG.FRAME_END,
+                  CFG.FPS, CFG.TRANSPARENT_BG))
 
 
 if __name__ == "__main__":
