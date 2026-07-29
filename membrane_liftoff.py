@@ -14,11 +14,13 @@ Each layer is a lateral grid (GRID_X x GRID_Y) of stacks, and every octahedron
 is now its OWN object.  That lets the individual octahedra in the sacrificial
 layer separate and dissipate one-by-one for a more realistic, crumbling look.
 
-Erosion sweeps from the OUTER EDGE of the square inward to the center.  Ordering
-uses Chebyshev distance ( max(|x|,|y|) ), which forms concentric SQUARE rings --
-so corners and edge faces on the same ring dissolve at the same time (a circular
-/ Euclidean ordering made the corners leave first).  Each octahedron flies off in
-a randomised, heavily agitated direction, tumbling as it shrinks away.
+Erosion proceeds strictly ring-by-ring from the OUTER EDGE of the square inward.
+Each octahedron is tagged with a ring index (its distance to the nearest grid
+edge), and each ring gets its own non-overlapping time window: the whole
+outermost square shell dissipates before the next shell begins, so you clearly
+see the intact region shrinking.  Corners and edge faces share a ring, so they
+leave together.  Each octahedron flies off in a randomised, heavily agitated
+direction, tumbling as it shrinks away.
 
 HOW TO RUN
 ----------
@@ -95,11 +97,15 @@ class CFG:
     MATERIAL_ROUGHNESS = 0.35       # a little shine
 
     # ---- Erosion motion (individual octahedra) -------------------------------
-    EROSION_START           = 30    # frame the outer ring begins to loosen
-    EROSION_END             = 150   # all sacrificial octahedra gone by here
-    EROSION_PIECE_DURATION  = 26    # frames from loosen -> fully dissipated
-    EROSION_PIECE_STAGGER   = 12    # extra spread so pieces on a ring separate
-    EROSION_JITTER          = 5     # +/- frames of pure randomness
+    # Erosion proceeds strictly ring-by-ring from the OUTSIDE in: the whole
+    # outermost square shell dissipates before the next shell starts, so the
+    # intact region is clearly seen shrinking. Keep
+    #   RING_INTERVAL >= RING_STAGGER + PIECE_DURATION
+    # to guarantee no inner piece erodes while an outer ring is still intact.
+    EROSION_START           = 30    # frame the outermost ring begins to loosen
+    EROSION_RING_INTERVAL   = 34    # frames between one ring starting and the next
+    EROSION_RING_STAGGER    = 8     # spread of start times WITHIN a single ring
+    EROSION_PIECE_DURATION  = 22    # frames from loosen -> fully dissipated
 
     EROSION_STREAM_DISTANCE = 7.0   # how far a piece flies before vanishing
     EROSION_RADIAL_STRENGTH = 1.0   # outward (away-from-center) bias
@@ -249,6 +255,10 @@ def build_layers(materials):
 
         for ix in range(CFG.GRID_X):
             for iy in range(CFG.GRID_Y):
+                # Ring index = distance to the nearest grid edge. Border cells
+                # are ring 0 (erode first); each step inward is the next shell.
+                ring = min(ix, CFG.GRID_X - 1 - ix,
+                           iy, CFG.GRID_Y - 1 - iy)
                 for kz in range(height):
                     loc = (x0 + ix * step_xy,
                            y0 + iy * step_xy,
@@ -256,6 +266,7 @@ def build_layers(materials):
                     obj = bpy.data.objects.new(
                         f"{name}_{ix}_{iy}_{kz}", octa_mesh)
                     obj.location = loc
+                    obj["erosion_ring"] = ring
                     coll.objects.link(obj)
                     objects[name].append(obj)
 
@@ -314,19 +325,16 @@ def _rand_unit(rng):
 # =============================================================================
 
 def animate_erosion(sacrificial_objs, rng):
+    """Erode the sacrificial layer strictly ring-by-ring, outside -> in, and
+    return the frame at which the last octahedron has fully dissipated."""
     if not sacrificial_objs:
-        return
+        return CFG.EROSION_START
 
-    # Chebyshev distance -> concentric SQUARE rings (corners & faces together).
-    cheb = [max(abs(o.location.x), abs(o.location.y)) for o in sacrificial_objs]
-    max_cheb = max(cheb) or 1.0
-
-    ring_span = max(1, CFG.EROSION_END - CFG.EROSION_START
-                    - CFG.EROSION_PIECE_DURATION - CFG.EROSION_PIECE_STAGGER)
-
-    for obj, c in zip(sacrificial_objs, cheb):
+    last_end = CFG.EROSION_START
+    for obj in sacrificial_objs:
         base_loc = obj.location.copy()
         base_scale = obj.scale.copy()
+        ring = int(obj.get("erosion_ring", 0))
 
         # Outward (radial) component in XY, plus a big random shove.
         radial = Vector((base_loc.x, base_loc.y, 0.0))
@@ -340,14 +348,12 @@ def animate_erosion(sacrificial_objs, rng):
             direction = radial
         direction.normalize()
 
-        # Outer rings (large Chebyshev distance) start first; center last.
-        ring_norm = c / max_cheb
-        start = int(CFG.EROSION_START
-                    + (1.0 - ring_norm) * ring_span
-                    + rng.uniform(0.0, CFG.EROSION_PIECE_STAGGER)
-                    + rng.uniform(-CFG.EROSION_JITTER, CFG.EROSION_JITTER))
-        start = max(CFG.EROSION_START, start)
+        # Each ring gets its own window; the within-ring stagger is bounded so
+        # a piece can never erode before its outer ring is completely gone.
+        ring_start = CFG.EROSION_START + ring * CFG.EROSION_RING_INTERVAL
+        start = int(ring_start + rng.uniform(0.0, CFG.EROSION_RING_STAGGER))
         end = start + CFG.EROSION_PIECE_DURATION
+        last_end = max(last_end, end)
 
         target = base_loc + direction * CFG.EROSION_STREAM_DISTANCE
 
@@ -380,12 +386,14 @@ def animate_erosion(sacrificial_objs, rng):
 
         _set_interpolation(obj, "SINE", "EASE_OUT")
 
+    return last_end
+
 
 # =============================================================================
 # Animation: water molecules
 # =============================================================================
 
-def build_and_animate_water(water_mesh, water_mat, geom, rng):
+def build_and_animate_water(water_mesh, water_mat, geom, rng, erosion_end):
     coll = ensure_collection("Water")
     water_mesh.materials.append(water_mat)
 
@@ -413,7 +421,9 @@ def build_and_animate_water(water_mesh, water_mat, geom, rng):
         appear = int(rng.uniform(CFG.WATER_FADE_IN_START, CFG.WATER_FADE_IN_END))
         arrive = int(rng.uniform(CFG.WATER_APPROACH_END - 12,
                                  CFG.WATER_APPROACH_END))
-        gone = int(rng.uniform(CFG.EROSION_END, CFG.WATER_DISSIPATE_END))
+        # Water lingers until erosion is finished, then washes away.
+        gone_lo = min(erosion_end, CFG.WATER_DISSIPATE_END - 5)
+        gone = int(rng.uniform(gone_lo, CFG.WATER_DISSIPATE_END))
 
         full = Vector((1.0, 1.0, 1.0))
         tiny = Vector((0.001, 0.001, 0.001))
@@ -580,11 +590,16 @@ def main():
                                      CFG.WATER_UV_SEGMENTS)
 
     geom = build_layers(materials)
-    animate_erosion(geom["objects"]["sacrificial"], rng)
-    build_and_animate_water(water_mesh, water_mat, geom, rng)
+    erosion_end = animate_erosion(geom["objects"]["sacrificial"], rng)
+    build_and_animate_water(water_mesh, water_mat, geom, rng, erosion_end)
 
     setup_camera_and_lights(geom)
     setup_render_and_timeline()
+
+    # Make sure the timeline covers erosion + water dissipation.
+    needed_end = max(CFG.FRAME_END, erosion_end + 5, CFG.WATER_DISSIPATE_END + 5)
+    if bpy.context.scene.frame_end < needed_end:
+        bpy.context.scene.frame_end = needed_end
 
     bpy.context.scene.frame_set(CFG.FRAME_START)
 
