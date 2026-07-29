@@ -60,12 +60,12 @@ class CFG:
 
     # ---- Octahedron geometry -------------------------------------------------
     OCTA_RADIUS = 0.5               # center-to-vertex distance of one octahedron
-    OCTA_GAP_XY = 0.05              # extra horizontal gap between stacks
-    OCTA_GAP_Z = 0.05               # extra vertical gap within a stack
+    OCTA_GAP_XY = 0.0               # extra horizontal gap between stacks
+    OCTA_GAP_Z = 0.0                # extra vertical gap within a stack
 
     # ---- Lateral extent of every layer (shared grid of stacks) ---------------
-    GRID_X = 6                      # stacks (columns) along X
-    GRID_Y = 6                      # stacks (columns) along Y
+    GRID_X = 20                     # stacks (columns) along X
+    GRID_Y = 20                     # stacks (columns) along Y
 
     # ---- Layer thicknesses, in octahedra tall (the "stacks" numbers) ---------
     LAYER_HEIGHTS = {               # bottom -> top
@@ -73,53 +73,58 @@ class CFG:
         "sacrificial": 4,          # the layer that erodes
         "film":        3,          # the membrane on top
     }
-    LAYER_SEPARATION_Z = 0.15       # gap between adjacent layers
+    LAYER_SEPARATION_Z = 0.0        # gap between adjacent layers
 
     # ---- Water molecules -----------------------------------------------------
-    WATER_COUNT = 40                # how many water "molecules" to spawn
-    WATER_RADIUS = 2.0 * OCTA_RADIUS  # ~ two octahedra across
-    WATER_UV_SEGMENTS = 16          # sphere resolution (keep modest for speed)
+    WATER_COUNT = 400               # how many water "molecules" to spawn
+    WATER_RADIUS = 1.0 * OCTA_RADIUS  # ~ one octahedron across
+    WATER_UV_SEGMENTS = 8           # sphere resolution (keep modest for speed)
     WATER_SPAWN_RING_MARGIN = 3.0   # how far out from the stack water starts
     WATER_SPAWN_Z_SPREAD = 2.0      # vertical spread of the spawn shell
     COLOR_WATER = (0.20, 0.70, 0.95, 1.0)   # cyan, semi-transparent
     WATER_ALPHA = 0.45
     # Water timeline (frames)
     WATER_FADE_IN_START = 1
-    WATER_FADE_IN_END   = 20
-    WATER_APPROACH_END  = 60        # water has reached the sacrificial layer
-    WATER_DISSIPATE_END = 175       # water fully faded out
+    WATER_FADE_IN_END   = 100
+    WATER_APPROACH_END  = 200       # water has reached the sacrificial layer
+    WATER_DISSIPATE_END = 275       # water fully faded out
 
     # ---- Colors (RGBA) -- vivid, emissive ------------------------------------
-    COLOR_SUBSTRATE   = (0.45, 0.05, 0.85, 1.0)   # vivid violet
+    COLOR_SUBSTRATE   = (0.35, 0.35, 0.40, 1.0)   # grey base
     COLOR_SACRIFICIAL = (1.00, 0.30, 0.02, 1.0)   # vivid orange-red
-    COLOR_FILM        = (0.00, 0.80, 1.00, 1.0)   # vivid cyan
-    EMISSION_STRENGTH = 0.6         # self-lit glow so colors pop on render
-    MATERIAL_ROUGHNESS = 0.35       # a little shine
+    COLOR_FILM        = (0.00, 0.40, 0.50, 1.0)   # teal membrane
+    EMISSION_STRENGTH = 0.1         # self-lit glow so colors pop on render
+    MATERIAL_ROUGHNESS = 0.95       # matte
 
     # ---- Erosion motion (individual octahedra) -------------------------------
-    # Erosion proceeds strictly ring-by-ring from the OUTSIDE in: the whole
-    # outermost square shell dissipates before the next shell starts, so the
-    # intact region is clearly seen shrinking. Keep
-    #   RING_INTERVAL >= RING_STAGGER + PIECE_DURATION
-    # to guarantee no inner piece erodes while an outer ring is still intact.
+    # Erosion proceeds ring-by-ring from the OUTSIDE in: a ring does not begin
+    # to loosen until the ring outside it has already streamed away from the
+    # lattice, so the intact region is clearly seen shrinking. RING_INTERVAL is
+    # the gap (in frames) between one ring starting and the next; the pieces
+    # then take PIECE_DURATION frames to fully dissipate, so with a long
+    # PIECE_DURATION the outer debris is still flying while inner rings begin
+    # (which looks good and does not affect the shrinking-core read). If you
+    # want each ring COMPLETELY gone before the next starts, raise RING_INTERVAL
+    # to >= RING_STAGGER + PIECE_DURATION.
     EROSION_START           = 30    # frame the outermost ring begins to loosen
-    EROSION_RING_INTERVAL   = 34    # frames between one ring starting and the next
-    EROSION_RING_STAGGER    = 8     # spread of start times WITHIN a single ring
-    EROSION_PIECE_DURATION  = 22    # frames from loosen -> fully dissipated
+    EROSION_RING_INTERVAL   = 14    # frames between one ring starting and the next
+    EROSION_RING_STAGGER    = 12    # spread of start times WITHIN a single ring
+    EROSION_PIECE_DURATION  = 66    # frames from loosen -> fully dissipated
 
-    EROSION_STREAM_DISTANCE = 7.0   # how far a piece flies before vanishing
-    EROSION_RADIAL_STRENGTH = 1.0   # outward (away-from-center) bias
+    EROSION_STREAM_DISTANCE = 13.0  # how far a piece flies before vanishing
+    EROSION_RADIAL_STRENGTH = 10.0  # outward (away-from-center) bias
     EROSION_AGITATION       = 1.8   # random-direction magnitude (large = chaotic)
-    EROSION_LIFT_BIAS       = 0.3   # small +Z bias so pieces stream, not sink
+    EROSION_LIFT_BIAS       = 0.0   # small +Z bias so pieces stream, not sink
     EROSION_SPIN            = 9.0   # radians of tumble as a piece flies off
 
     # ---- Rendering / viewport smoothness ------------------------------------
     TRANSPARENT_BG = True           # render with a transparent (alpha) background
     USE_EEVEE = True                # EEVEE is far faster than Cycles for playback
-    EEVEE_SAMPLES = 16              # low samples = smooth realtime playback
+    EEVEE_SAMPLES = 10              # low samples = smooth realtime playback
     FPS = 24
     FRAME_START = 1
-    FRAME_END = 185                 # long enough for the water to fully dissipate
+    # Covers erosion (~frame 234 with this grid) and water dissipation (275).
+    FRAME_END = 280
     RESOLUTION_X = 1280
     RESOLUTION_Y = 720
     RESOLUTION_PERCENT = 100
