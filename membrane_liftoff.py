@@ -289,10 +289,33 @@ def build_layers(materials):
 # Animation helpers
 # =============================================================================
 
-def _set_interpolation(obj, interp="SINE", easing="EASE_IN_OUT"):
-    if not obj.animation_data or not obj.animation_data.action:
+def _iter_fcurves(obj):
+    """Yield an object's F-Curves across Blender versions.
+
+    Pre-4.4 actions expose `action.fcurves` directly. Blender 4.4+/5.x use
+    'slotted actions' where F-Curves live in layers -> strips -> channelbags,
+    and `action.fcurves` no longer exists.
+    """
+    ad = obj.animation_data
+    if not ad or not ad.action:
         return
-    for fc in obj.animation_data.action.fcurves:
+    action = ad.action
+
+    legacy = getattr(action, "fcurves", None)   # None on 5.x (attr removed)
+    if legacy is not None:
+        for fc in legacy:
+            yield fc
+        return
+
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for cbag in getattr(strip, "channelbags", []):
+                for fc in cbag.fcurves:
+                    yield fc
+
+
+def _set_interpolation(obj, interp="SINE", easing="EASE_IN_OUT"):
+    for fc in _iter_fcurves(obj):
         for kp in fc.keyframe_points:
             kp.interpolation = interp
             kp.easing = easing
