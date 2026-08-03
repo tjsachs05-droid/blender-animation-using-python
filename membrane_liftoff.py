@@ -77,22 +77,23 @@ class CFG:
 
     # ---- Water molecules -----------------------------------------------------
     WATER_COUNT = 400               # how many water "molecules" to spawn
-    WATER_RADIUS = 1.0 * OCTA_RADIUS  # ~ one octahedron across
+    WATER_RADIUS = 0.5 * OCTA_RADIUS  # ~ one octahedron across
     WATER_UV_SEGMENTS = 8           # sphere resolution (keep modest for speed)
     WATER_SPAWN_RING_MARGIN = 3.0   # how far out from the stack water starts
     WATER_SPAWN_Z_SPREAD = 2.0      # vertical spread of the spawn shell
     COLOR_WATER = (0.20, 0.70, 0.95, 1.0)   # cyan, semi-transparent
-    WATER_ALPHA = 0.45
+    WATER_ALPHA = 0.25
     # Water timeline (frames)
     WATER_FADE_IN_START = 1
     WATER_FADE_IN_END   = 100
     WATER_APPROACH_END  = 200       # water has reached the sacrificial layer
     WATER_DISSIPATE_END = 275       # water fully faded out
 
-    # ---- Colors (RGBA) -- vivid, emissive ------------------------------------
-    COLOR_SUBSTRATE   = (0.35, 0.35, 0.40, 1.0)   # grey base
+    # ---- Colors (RGBA) -- the 4th value (alpha) sets each layer's transparency
+    X = 0.3
+    COLOR_SUBSTRATE   = (0.35 * X, 0.35 * X, 0.40 * X, 1.0)   # grey base
     COLOR_SACRIFICIAL = (1.00, 0.30, 0.02, 1.0)   # vivid orange-red
-    COLOR_FILM        = (0.00, 0.40, 0.50, 1.0)   # teal membrane
+    COLOR_FILM        = (0.00, 0.40, 0.50, 0.15)  # teal membrane (transparent)
     EMISSION_STRENGTH = 0.1         # self-lit glow so colors pop on render
     MATERIAL_ROUGHNESS = 0.95       # matte
 
@@ -109,13 +110,13 @@ class CFG:
     EROSION_START           = 30    # frame the outermost ring begins to loosen
     EROSION_RING_INTERVAL   = 14    # frames between one ring starting and the next
     EROSION_RING_STAGGER    = 12    # spread of start times WITHIN a single ring
-    EROSION_PIECE_DURATION  = 66    # frames from loosen -> fully dissipated
+    EROSION_PIECE_DURATION  = 20    # frames from loosen -> fully dissipated
 
-    EROSION_STREAM_DISTANCE = 13.0  # how far a piece flies before vanishing
+    EROSION_STREAM_DISTANCE = 5.0   # how far a piece flies before vanishing
     EROSION_RADIAL_STRENGTH = 10.0  # outward (away-from-center) bias
-    EROSION_AGITATION       = 1.8   # random-direction magnitude (large = chaotic)
+    EROSION_AGITATION       = 1.0   # random-direction magnitude (large = chaotic)
     EROSION_LIFT_BIAS       = 0.0   # small +Z bias so pieces stream, not sink
-    EROSION_SPIN            = 9.0   # radians of tumble as a piece flies off
+    EROSION_SPIN            = 5.0   # radians of tumble as a piece flies off
 
     # ---- Rendering / viewport smoothness ------------------------------------
     TRANSPARENT_BG = True           # render with a transparent (alpha) background
@@ -123,7 +124,7 @@ class CFG:
     EEVEE_SAMPLES = 10              # low samples = smooth realtime playback
     FPS = 24
     FRAME_START = 1
-    # Covers erosion (~frame 234 with this grid) and water dissipation (275).
+    # Covers erosion (~frame 190 with this grid) and water dissipation (275).
     FRAME_END = 280
     RESOLUTION_X = 1280
     RESOLUTION_Y = 720
@@ -207,12 +208,18 @@ def make_material(name, rgba, emission_strength=0.0, alpha=1.0):
                     break
             if "Emission Strength" in bsdf.inputs:
                 bsdf.inputs["Emission Strength"].default_value = emission_strength
-    mat.diffuse_color = rgba   # viewport display color (Solid shading)
+    # Viewport display color incl. alpha (Solid shading / object color).
+    mat.diffuse_color = (rgba[0], rgba[1], rgba[2], alpha)
     if alpha < 1.0:
-        for attr, val in (("blend_method", "BLEND"),
-                          ("show_transparent_back", False)):
-            if hasattr(mat, attr):
-                setattr(mat, attr, val)
+        # EEVEE Legacy (< 4.2): blended alpha via blend_method.
+        if hasattr(mat, "blend_method"):
+            mat.blend_method = "BLEND"
+        if hasattr(mat, "show_transparent_back"):
+            mat.show_transparent_back = False
+        # EEVEE Next (4.2+/5.x): blend_method was removed; transparency is
+        # controlled by surface_render_method ('BLENDED' = true alpha blend).
+        if hasattr(mat, "surface_render_method"):
+            mat.surface_render_method = "BLENDED"
     return mat
 
 
@@ -581,13 +588,17 @@ def main():
     if CFG.CLEAR_SCENE:
         clear_scene()
 
+    # Each layer's transparency comes from the alpha (4th) channel of its color.
     materials = {
         "substrate":   make_material("Substrate", CFG.COLOR_SUBSTRATE,
-                                     CFG.EMISSION_STRENGTH),
+                                     CFG.EMISSION_STRENGTH,
+                                     alpha=CFG.COLOR_SUBSTRATE[3]),
         "sacrificial": make_material("Sacrificial", CFG.COLOR_SACRIFICIAL,
-                                     CFG.EMISSION_STRENGTH),
+                                     CFG.EMISSION_STRENGTH,
+                                     alpha=CFG.COLOR_SACRIFICIAL[3]),
         "film":        make_material("Film", CFG.COLOR_FILM,
-                                     CFG.EMISSION_STRENGTH),
+                                     CFG.EMISSION_STRENGTH,
+                                     alpha=CFG.COLOR_FILM[3]),
     }
     water_mat = make_material("Water", CFG.COLOR_WATER,
                               emission_strength=0.3, alpha=CFG.WATER_ALPHA)
